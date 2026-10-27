@@ -2,6 +2,10 @@
 
 A local Computer Networks and machine learning project for **authorized network traffic analysis**. “Twin” refers to the two directions of a network conversation: source to destination and the reply. Import a PCAP, inspect packet headers and bidirectional flows, classify those flows with a trained Random Forest, review alerts, replay packet/flow events through WebSockets, and export CSV/PDF reports. Sample mode is clearly separated from imported traffic.
 
+## Packet Inspector V2
+
+Open **Packet Inspector** for a sortable/filterable packet list, expandable protocol fields, linked hex/ASCII highlighting, and bounded TCP following. Live capture and imported PCAPs share the inspector. New packets retain bounded raw bytes locally; historical live packets remain metadata-only. See [inspector usage, filters, retention, and limits](docs/packet-inspector.md) and [official Wireshark reference research](docs/wireshark-reference.md).
+
 ## Four development phases
 
 | Phase | Delivered |
@@ -34,7 +38,7 @@ The following commands download five converted CIC-IDS2017 CSV tables from a [pu
 .\.venv\Scripts\python.exe -m ml.train --data datasets\raw --output ml\artifacts --max-rows-per-class 6000
 ```
 
-A trained model and measured metrics are already present in this local workspace under `ml/artifacts/`. That directory is ignored by Git because model and source-data licensing/provenance should be handled separately when sharing the project. On a fresh checkout, run the commands above before expecting AI predictions. Until then, PCAP analysis still works and imported flows are marked **unanalyzed**. You can classify an existing capture with the “Run trained model on capture” button after training.
+Training writes the model and measured metrics under `ml/artifacts/`; check `/api/model` to determine whether they are installed in your workspace. That directory is ignored by Git because model and source-data licensing/provenance should be handled separately when sharing the project. On a fresh checkout, run the commands above before expecting AI predictions. Until then, PCAP analysis still works and imported flows are marked **unanalyzed**. You can classify an existing capture with “Run trained model on capture” in Network Traffic, or select a completed session under **AI Threat Detection → Analyze saved traffic → Analyze capture**. New live flows and PCAP imports are classified automatically when the model is available. Readiness checks the actual model artifact, not only its metrics file.
 
 Start the backend in one PowerShell terminal from the FlowTwin folder:
 
@@ -71,7 +75,7 @@ npm.cmd test
 npm.cmd run build
 ```
 
-The backend tests use isolated in-memory SQLite and synthetic PCAPs. They verify parsing, bidirectional counts, timeouts, upload validation, real/sample isolation, inference schema, replay events, alert status transitions, and CSV/PDF output. Frontend tests verify settings, flow filtering, and API errors. Additional API contracts are available at `/docs` while the backend runs.
+The backend tests use isolated in-memory SQLite and synthetic PCAPs. They verify parsing, bidirectional counts, timeouts, upload validation, real/sample isolation, inference schema, replay events, alert status transitions, and CSV/PDF output. Frontend tests verify settings, flow filtering, API errors, saved-capture analysis, and automatic replay reconnection. Capture reanalysis runs in a worker thread and commits batches of 100 flows so dashboard reads and WebSockets remain responsive. Completed batches remain saved if analysis is interrupted; rerun the same capture safely to finish or refresh its predictions. Large sessions may take several minutes (the UI allows up to ten minutes). Additional API contracts are available at `/docs` while the backend runs.
 
 ## Model and trust limits
 
@@ -100,7 +104,7 @@ Watch the [expanded English demo video](docs/flowtwin-demo-english.mp4) or the [
 - **No real data:** turn sample mode off, then import a PCAP. Sample and real records are isolated.
 - **No model result:** check `/api/model`. Run the training commands and use “Run trained model on capture” for captures imported earlier.
 - **Upload rejected:** PCAP/PCAPNG magic is validated; files over 25 MB, over 50,000 packets, or over 5,000 flows are rejected before a partial database commit.
-- **No replay updates:** keep the frontend on port 5174 and backend on 8000. The Vite proxy forwards `/api/ws/monitor`; select a previously imported capture.
+- **No replay updates:** keep the frontend on port 5174 and backend on 8000. The Vite proxy forwards `/api/ws/monitor`; select a previously imported capture. The replay page reconnects automatically after a dropped socket and restores server progress; packet events missed while disconnected are not replayed.
 - **Windows capture warning:** Scapy can read PCAP files without Npcap. Npcap/capture permissions are required for the Live interface capture tab; offline PCAP analysis remains available without them.
 - **Installation connection reset:** retry `npm.cmd ci --maxsockets=1 --fetch-retries=5` or repeat pip installation on a stable connection. Do not disable certificate verification.
 - **Local storage:** `backend/flowtwin.db`, uploaded PCAPs, and model artifacts are local, unencrypted development data. Use only authorized captures and do not publish the API to an untrusted network.

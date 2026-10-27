@@ -110,7 +110,7 @@ function LiveCapture({ inspect }) {
       <span>Driver drops: {state?.driver_dropped_packets == null ? 'unknown' : number(state.driver_dropped_packets)}</span>
       {streamDropped > 0 && <span>{number(streamDropped)} stream updates skipped; showing the latest snapshot</span>}
     </div>
-    <p className="context-note">{state?.model_status === 'trained' ? 'Completed flows are classified automatically by the installed model.' : state?.model_error ? `Model error: ${state.model_error}. Traffic is retained as unanalyzed.` : 'Until a trained model is available, flows are saved as unanalyzed and no ML alerts are generated.'} Active flows remain unanalyzed until TCP termination, the 120-second timeout, or Stop.</p>
+    <p className="context-note">{state?.model_status === 'trained' ? 'Completed flows are classified automatically by the installed model.' : state?.model_error ? `Model error: ${state.model_error}. Traffic is retained as unanalyzed.` : 'Model inference is confirmed on the first completed flow. Check AI Threat Detection for installed model readiness.'} Active flows remain unanalyzed until TCP termination, the 120-second timeout, or Stop.</p>
     <div className="two-columns">
       <Panel title="Recent connections" subtitle="Latest 50 observed flows · active and completed">
         <div className="stream-list">{recent.length ? recent.map(flow => <div key={flow.id}>
@@ -119,7 +119,7 @@ function LiveCapture({ inspect }) {
         </div>) : <Empty title="Waiting for live traffic">Select an interface and start monitoring.</Empty>}</div>
       </Panel>
       <Panel title="Live protocol distribution" subtitle="Processed packets across this session"><HorizontalChart data={state?.protocols || []} measure="Packets" color="#31d6c4"/></Panel>
-      <Panel title="Recent packet activity" subtitle="Latest 15 structured headers · payloads are not retained">
+      <Panel title="Recent packet activity" subtitle="Latest 15 structured headers · bounded original bytes available in Packet Inspector">
         <div className="stream-list">{state?.recent_packets?.length ? state.recent_packets.map((p, index) => <div key={`${p.timestamp}-${index}`}><span className="mono">{p.source}:{p.source_port} → {p.destination}:{p.destination_port}</span><small>{p.protocol} · {p.size} B · {p.flags || '—'} · {clock(p.timestamp)} UTC</small></div>) : <Empty title="No captured packets yet">Start monitoring an authorized interface to see packet activity.</Empty>}</div>
       </Panel>
       <Panel title="Live security alerts" subtitle="Non-benign model predictions from completed flows">

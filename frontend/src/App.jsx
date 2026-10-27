@@ -7,13 +7,14 @@ import { TrafficPage, SettingsPage } from './pages';
 import { HorizontalChart, ProtocolChart, Timeline } from './charts';
 import { DetectionPage, AlertsPage, AnalyticsPage, ReportsPage } from './advanced-pages';
 import { MonitoringPage } from './live-monitoring';
+import { PacketInspectorPage } from './packet-inspector';
 
 const navigation = [
-  ['dashboard', 'Dashboard', LayoutDashboard], ['traffic', 'Network Traffic', Network], ['detection', 'AI Threat Detection', BrainCircuit], ['monitoring', 'Live Monitoring', Radio], ['alerts', 'Security Alerts', Bell], ['analytics', 'Analytics', Activity], ['reports', 'Reports', FileBarChart2], ['settings', 'Settings', Settings2],
+  ['dashboard', 'Dashboard', LayoutDashboard], ['traffic', 'Network Traffic', Network], ['inspector', 'Packet Inspector', Network], ['detection', 'AI Threat Detection', BrainCircuit], ['monitoring', 'Live Monitoring', Radio], ['alerts', 'Security Alerts', Bell], ['analytics', 'Analytics', Activity], ['reports', 'Reports', FileBarChart2], ['settings', 'Settings', Settings2],
 ];
-const route = () => navigation.some(([id]) => id === location.hash.slice(2)) ? location.hash.slice(2) : 'dashboard';
+const route = () => navigation.some(([id]) => id === location.hash.slice(2).split('?')[0]) ? location.hash.slice(2).split('?')[0] : 'dashboard';
 const descriptions = {
-  dashboard: 'A clearer view of your network. A smarter approach to security.', traffic: 'Explore connections, protocols, and the flow of information.', detection: 'Understand the signals behind every potential threat.', monitoring: 'Your workspace for real-time network visibility.', alerts: 'Review security events and investigate what matters.', analytics: 'Turn network activity into a bigger picture.', reports: 'Keep your findings organized and ready to share.', settings: 'Configure your workspace and data preferences.',
+  inspector: 'Inspect packet headers, retained bytes, and TCP conversations.', dashboard: 'A clearer view of your network. A smarter approach to security.', traffic: 'Explore connections, protocols, and the flow of information.', detection: 'Understand the signals behind every potential threat.', monitoring: 'Your workspace for real-time network visibility.', alerts: 'Review security events and investigate what matters.', analytics: 'Turn network activity into a bigger picture.', reports: 'Keep your findings organized and ready to share.', settings: 'Configure your workspace and data preferences.',
 };
 
 function Stats({ data }) {
@@ -33,6 +34,7 @@ function Dashboard({ data, inspect }) {
 
 function OtherPages({ page, data, inspect, revision, refresh }) {
   if (page === 'detection') return <DetectionPage demoMode={data.is_demo} revision={revision} inspect={inspect}/>;
+  if (page === 'inspector') return <PacketInspectorPage demoMode={data.is_demo} revision={revision} inspect={inspect}/>;
   if (page === 'monitoring') return <MonitoringPage demoMode={data.is_demo} revision={revision} inspect={inspect}/>;
   if (page === 'alerts') return <AlertsPage demoMode={data.is_demo} data={data} revision={revision} inspect={inspect} onRefresh={refresh}/>;
   if (page === 'analytics') return <AnalyticsPage data={data} demoMode={data.is_demo} revision={revision}/>;
@@ -62,7 +64,7 @@ export default function App() {
     }).catch(e => { if (!cancelled) { setError(`Cannot connect to the backend. Start FastAPI on port 8000, then retry. ${e.message}`); setBundle(null); } }).finally(() => { if (!cancelled) setBusy(false); });
     return () => { cancelled = true; };
   }, [hours, revision]);
-  useEffect(() => { if (!bundle) return; const timer = setInterval(refresh, bundle.settings.refresh_seconds * 1000); return () => clearInterval(timer); }, [bundle?.settings.refresh_seconds, refresh]);
+  useEffect(() => { const timer = setInterval(refresh, (bundle?.settings.refresh_seconds ?? 5) * 1000); return () => clearInterval(timer); }, [bundle?.settings.refresh_seconds, refresh]);
   useEffect(() => {
     if (!bundle || bundle.settings.demo_mode) return;
     let lastLiveRefresh = 0;

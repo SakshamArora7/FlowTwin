@@ -1,0 +1,39 @@
+.packet-inspector { display: grid; gap: 18px; }
+.inspector-toolbar, .inspector-filter, .inspector-status, .inspector-pagination, .inspector-links { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.inspector-toolbar label, .inspector-filter label { display: flex; align-items: center; gap: 8px; }
+.packet-inspector select, .packet-inspector input { background: var(--bg, #101a2c); color: inherit; border: 1px solid #334155; border-radius: 8px; padding: 9px; max-width: 100%; }
+.inspector-filter input { flex: 1; min-width: 220px; font-family: monospace; }
+.inspector-status { color: #94a3b8; font-size: 12px; }
+.inspector-status details { max-width: 700px; }
+.inspector-status summary, .layer-tree summary { cursor: pointer; }
+.inspector-panes { display: grid; grid-template-columns: minmax(300px, 1fr) minmax(340px, 1.1fr); gap: 18px; }
+.inspector-panes > :first-child { grid-column: 1 / -1; }
+.inspector-table-scroll { overflow: auto; max-height: 470px; }
+.packet-table { width: 100%; border-collapse: collapse; white-space: nowrap; font: 12px monospace; }
+.packet-table th, .packet-table td { padding: 9px 10px; border-bottom: 1px solid #263246; text-align: left; }
+.packet-table th { position: sticky; top: 0; background: #142034; z-index: 1; }
+.packet-table button { color: inherit; background: transparent; border: 0; cursor: pointer; padding: 3px; }
+.packet-table td:first-child button { text-decoration: underline; min-width: 30px; }
+.packet-table .protocol-tcp { background: #38bdf80b; }
+.packet-table .protocol-udp, .packet-table .protocol-dns { background: #a78bfa0e; }
+.packet-table .protocol-http, .packet-table .protocol-tls { background: #34d3990c; }
+.packet-table .protocol-arp, .packet-table .protocol-icmp { background: #fbbf240d; }
+.packet-table tr.selected { background: #22d3ee25; box-shadow: inset 3px 0 #22d3ee; }
+.inspector-pagination { padding: 12px; font-size: 12px; }
+.layer-tree { padding: 12px; max-height: 450px; overflow: auto; }
+.layer-tree details { margin-bottom: 10px; }
+.layer-tree small { color: #94a3b8; }
+.layer-tree button { display: block; width: 100%; text-align: left; padding: 8px 12px; border: 0; background: transparent; color: inherit; font: 12px monospace; cursor: pointer; overflow-wrap: anywhere; }
+.layer-tree button.selected { background: #22d3ee25; }
+.inspector-links { padding: 12px; }
+.hex-view { padding: 12px; overflow-x: auto; font: 11px/1.9 monospace; }
+.hex-line { display: flex; gap: 16px; white-space: pre; }
+.hex-offset { color: #94a3b8; }
+.hex-values { display: grid; grid-template-columns: repeat(16, 2ch); gap: 0 5px; }
+.hex-byte { display: inline-block; }
+.ascii-values { letter-spacing: 1px; }
+.packet-inspector mark { background: #67e8f9; color: #06242b; }
+.stream-content { max-height: 400px; overflow: auto; padding: 14px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.packet-inspector section { padding: 12px; }
+.packet-inspector button:focus-visible, .packet-inspector summary:focus-visible { outline: 2px solid #67e8f9; outline-offset: 2px; }
+@media (max-width: 1050px) { .inspector-panes { grid-template-columns: minmax(0, 1fr); } }

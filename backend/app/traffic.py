@@ -1,10 +1,12 @@
-"""Bounded offline PCAP analysis. No packet content is executed or persisted."""
+"""Bounded offline flow analysis with independently retained inspection frames."""
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from math import sqrt
 
 from scapy.all import ICMP, IP, IPv6, TCP, UDP, PcapReader
+
+from .dissection import capture_frame
 
 MAX_PACKETS = 50_000
 MAX_FLOWS = 5_000
@@ -136,13 +138,22 @@ def analyze_pcap(path: Path):
     active = {}
     completed = []
     accepted = 0
+    inspection_frames = []
+    retained_bytes = 0
     with PcapReader(str(path)) as reader:
         for raw_index, raw in enumerate(reader):
             if raw_index >= MAX_PACKETS:
                 raise ValueError(f"PCAP exceeds the {MAX_PACKETS:,} packet processing limit")
+            frame = capture_frame(raw)
+            frame['number'] = raw_index + 1
+            if retained_bytes + len(frame['raw_data']) > 64 * 1024 * 1024:
+                frame.update(raw_data=b'', raw_status='retention_limit')
+            retained_bytes += len(frame['raw_data'])
+            inspection_frames.append(frame)
             packet = extract_packet(raw)
             if packet is None:
                 continue
+            packet["_number"] = raw_index + 1
             accepted += 1
             key = packet_key(packet)
             previous = active.get(key)
@@ -160,4 +171,4 @@ def analyze_pcap(path: Path):
             previous["last"] = packet["timestamp"]
     completed.extend(summarize(flow) for flow in active.values())
     completed.sort(key=lambda row: row["timestamp"])
-    return {"packet_count": accepted, "flows": completed}
+    return {"packet_count": accepted, "flows": completed, "inspection_frames": inspection_frames}

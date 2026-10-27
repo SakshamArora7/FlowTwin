@@ -14,6 +14,7 @@ from .models import Flow, Settings
 from .schemas import FlowSchema, SettingsSchema
 from .advanced import router as advanced_router
 from .live_api import router as live_router
+from .inspector import router as inspector_router
 from . import live
 
 
@@ -33,6 +34,7 @@ app = FastAPI(title="FlowTwin", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5174", "http://127.0.0.1:5174"], allow_methods=["GET", "PUT", "POST", "PATCH"], allow_headers=["Content-Type"])
 app.include_router(advanced_router)
 app.include_router(live_router)
+app.include_router(inspector_router)
 
 
 def selected_flows(db, hours=24):
@@ -48,8 +50,8 @@ def selected_flows(db, hours=24):
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
     db.execute(text("SELECT 1"))
-    from .detection import model_metrics
-    return {"status": "ok", "database": "connected", "phase": 4, "model": "trained" if model_metrics() else "not_trained", "capture": "pcap_import_and_replay"}
+    from .advanced import model_status
+    return {"status": "ok", "database": "connected", "phase": 4, "model": "trained" if model_status()["status"] == "trained" else "not_trained", "capture": "pcap_import_and_replay"}
 
 
 @app.get("/api/settings", response_model=SettingsSchema)

@@ -18,7 +18,7 @@ The Vite development proxy sends `/api` to localhost:8000 and upgrades `/api/ws/
 
 ## Packet and flow definitions
 
-Scapy reads PCAP/PCAPNG offline. The parser accepts IPv4 or IPv6 with TCP, UDP, or ICMP. It records timestamps in UTC, IPs, ports (zero for ICMP), protocol, IP-layer packet size, TCP flags, and observed direction. Packet payloads are used only to count bytes; they are neither stored nor executed.
+Scapy reads PCAP/PCAPNG offline. The parser accepts IPv4 or IPv6 with TCP, UDP, or ICMP. It records timestamps in UTC, IPs, ports (zero for ICMP), protocol, IP-layer packet size, TCP flags, and observed direction. The flow/ML path uses payload sizes rather than content. Packet Inspector V2 separately retains bounded original bytes locally for inspection; packet content is never executed. Historical captures remain metadata-only where original bytes were not retained.
 
 A bidirectional key is protocol plus the unordered pair of `(IP, port)` endpoints. The first observed packet sets the forward direction. A new flow begins after 120 seconds of inactivity, after 120 seconds of elapsed flow time, or after the next packet following a TCP FIN/RST. Within each flow, forward/backward packet counts and bytes, duration, packet-size min/max/mean/std, packet rate, inter-arrival mean/std, and TCP flag counts are calculated from actual packet records. This implementation uses a bounded in-memory analyzer: at most 25 MB uploaded, 50,000 raw packets, and 5,000 flows. It rejects excess input rather than saving a partial analysis.
 
@@ -75,3 +75,9 @@ Explicit local interface selection -> AsyncSniffer (store=False, promisc=False)
 ```
 
 The capture worker is separate from offline PCAP analysis. Live sessions reuse Capture with source=live, existing flow/packet/detection tables, and the additive live_sessions table. A single process owns capture; start/stop are serialized. Model inference and SQLite work stay off the ASGI event loop. Shared online statistics retain no packet list; SQL dashboard aggregation and packet/flow pagination avoid loading historical captures into memory. Stop closes intake, drains the queue, finalizes active flows, commits, then publishes stopped. Restart marks unfinished sessions interrupted. WebSocket consumers have bounded queues and cannot stall capture. Genuine capture and saved-PCAP replay are separate UI choices and event types.
+
+## Packet Inspector V2
+
+The inspection path adds inspection_captures (retention counters), inspection_packets (list/filter projections and flow/conversation associations), packet_bytes (separate original-byte BLOBs), and tcp_streams (bidirectional conversations). No existing tables are destructively migrated. Live callbacks snapshot bounded original bytes and original link type; the worker performs decoding, association and persistence. PCAP import preserves original frame order and additionally indexes ARP/unsupported frames without inventing ML flows.
+
+Local-only /api/inspector routes compile a typed display-filter subset into parameterized SQLite queries, paginate summaries, decode selected frames with explicit field ranges, and return bounded per-direction TCP reconstruction with missing-range/fragmentation warnings. React synchronizes packet, field and hex/ASCII panes, invalidates committed pages through existing WebSockets and links to existing flow/detection/alert views. See [complete inspector contract and limits](packet-inspector.md) and [official Wireshark research](wireshark-reference.md).

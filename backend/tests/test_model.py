@@ -7,6 +7,24 @@ from backend.app.detection import load_model, local_contributions, model_metrics
 from ml.schema import FEATURES, SCHEMA_VERSION
 
 
+def test_model_status_requires_artifact_not_just_metrics(client, monkeypatch):
+    from backend.app import advanced
+    api, _ = client
+    monkeypatch.setattr(advanced, "model_metrics", lambda: {"accuracy": 0.9})
+    monkeypatch.setattr(advanced, "load_model", lambda: None)
+    assert api.get("/api/model").json()["status"] == "unavailable"
+
+def test_corrupt_model_reports_unavailable(client, monkeypatch):
+    from backend.app import advanced
+    api, _ = client
+    def broken():
+        raise RuntimeError('Model feature schema does not match the packet extractor')
+    monkeypatch.setattr(advanced, 'load_model', broken)
+    result = api.get('/api/model').json()
+    assert result['status'] == 'unavailable'
+    assert 'schema' in result['error']
+
+
 def test_installed_model_feature_schema_and_local_explanation():
     artifact = load_model()
     if artifact is None:

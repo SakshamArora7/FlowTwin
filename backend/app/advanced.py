@@ -27,6 +27,7 @@ from .storage import apply_prediction, save_flow, packet_record, serialize_flow
 from .events import broadcast, clients, subscribe
 from .local_access import require_local
 from . import live
+from .inspection_store import InspectionWriter
 
 router = APIRouter(prefix="/api")
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads"
@@ -34,6 +35,7 @@ MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAGIC = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d", b"\x0a\x0d\x0d\x0a"}
 replay_state = {"active": False, "capture_id": None, "processed": 0, "total": 0}
 replay_task = None
+analyzing_captures = set()
 
 
 def active_real(db):
@@ -62,29 +64,38 @@ async def import_pcap(file: UploadFile = File(...), db: Session = Depends(get_db
         if size < 24 or magic not in MAGIC:
             raise HTTPException(400, "File is not a recognized PCAP or PCAPNG capture")
         try:
-            analysis = analyze_pcap(target)
+            analysis = await asyncio.to_thread(analyze_pcap, target)
         except (ValueError, OSError, EOFError, RuntimeError) as exc:
             raise HTTPException(400, f"Capture could not be processed: {exc}") from exc
-        if not analysis["flows"]:
-            raise HTTPException(400, "Capture contains no supported IPv4/IPv6 TCP, UDP or ICMP packets")
-        capture = Capture(filename=filename, imported_at=datetime.now(timezone.utc).isoformat(), packet_count=analysis["packet_count"], flow_count=len(analysis["flows"]), source="pcap")
-        db.add(capture)
-        db.flush()
-        detected = 0
-        for row in analysis["flows"]:
-            result = predict(row["features"])
-            flow = save_flow(db, capture.id, row, result)
-            db.add_all(packet_record(capture.id, flow.id, p) for p in row["records"])
-            detected += result is not None
-        db.commit()
-        await broadcast({"type": "capture_imported", "capture_id": capture.id, "packet_count": capture.packet_count, "flow_count": capture.flow_count})
-        return {"id": capture.id, "filename": filename, "packet_count": capture.packet_count, "flow_count": capture.flow_count, "detected_flow_count": detected, "model_status": "trained" if detected else "unavailable", "source": "pcap"}
+        if not analysis["inspection_frames"]:
+            raise HTTPException(400, "Capture contains no packets")
+        result = await asyncio.to_thread(persist_import, db, filename, analysis)
+        await broadcast({"type": "capture_imported", "capture_id": result["id"], "packet_count": result["packet_count"], "flow_count": result["flow_count"]})
+        return result
     except Exception:
         db.rollback()
         target.unlink(missing_ok=True)
         raise
     finally:
         await file.close()
+
+
+def persist_import(db, filename, analysis):
+    predictions = [predict(row['features']) for row in analysis['flows']]
+    capture = Capture(filename=filename, imported_at=datetime.now(timezone.utc).isoformat(), packet_count=len(analysis['inspection_frames']), flow_count=len(analysis['flows']), source='pcap')
+    db.add(capture); db.flush()
+    writer, flow_ids, detected = InspectionWriter(db, capture.id), {}, 0
+    for row, prediction in zip(analysis['flows'], predictions):
+        flow = save_flow(db, capture.id, row, prediction)
+        for p in row['records']:
+            db.add(packet_record(capture.id, flow.id, p))
+            flow_ids[p['_number']] = (flow.id, p['direction'])
+        detected += prediction is not None
+    for frame in analysis['inspection_frames']:
+        flow_id, direction = flow_ids.get(frame['number'], (None, ''))
+        writer.write(db, frame, flow_id, direction)
+    db.commit()
+    return {'id': capture.id, 'filename': filename, 'packet_count': capture.packet_count, 'flow_count': capture.flow_count, 'detected_flow_count': detected, 'model_status': 'trained' if detected else 'unavailable', 'source': 'pcap'}
 
 
 @router.get("/captures")
@@ -103,18 +114,32 @@ async def analyze_existing_capture(capture_id: int, db: Session = Depends(get_db
         raise HTTPException(404, "Capture not found")
     if capture.source == "live" and live.capture.busy and live.capture.snapshot()["capture_id"] == capture_id:
         raise HTTPException(409, "Stop the live session before reanalyzing its flows")
-    details = list(db.scalars(select(FlowData).where(FlowData.capture_id == capture_id)))
-    classified = 0
-    for detail in details:
-        if json.loads(detail.features_json).get("complete") is False:
-            continue
-        flow = db.get(Flow, detail.flow_id)
-        result = predict(json.loads(detail.features_json)["features"])
-        apply_prediction(db, flow, detail, result)
-        classified += 1
-    db.commit()
+    if capture_id in analyzing_captures:
+        raise HTTPException(409, "This capture is already being analyzed")
+    analyzing_captures.add(capture_id)
+    try:
+        classified = await asyncio.to_thread(classify_capture, db, capture_id)
+    finally:
+        analyzing_captures.discard(capture_id)
     await broadcast({"type": "analysis_completed", "capture_id": capture_id, "classified_flow_count": classified})
     return {"capture_id": capture_id, "classified_flow_count": classified, "model_status": "trained"}
+
+
+def classify_capture(db, capture_id):
+    details = list(db.scalars(select(FlowData).where(FlowData.capture_id == capture_id)))
+    classified = 0
+    for start in range(0, len(details), 100):
+        # Predict before writing, so SQLite does not stay locked during inference.
+        results = []
+        for detail in details[start:start + 100]:
+            statistics = json.loads(detail.features_json)
+            if statistics.get("complete") is not False:
+                results.append((detail, predict(statistics["features"])))
+        for detail, result in results:
+            apply_prediction(db, db.get(Flow, detail.flow_id), detail, result)
+            classified += 1
+        db.commit()
+    return classified
 
 
 @router.get("/captures/{capture_id}/packets")
@@ -144,8 +169,11 @@ def flow_analysis(flow_id: int, db: Session = Depends(get_db)):
 
 @router.get("/model")
 def model_status():
-    metrics = model_metrics()
-    return {"status": "trained" if metrics else "unavailable", "metrics": metrics}
+    try:
+        artifact = load_model()
+        return {"status": "trained" if artifact is not None else "unavailable", "metrics": model_metrics()}
+    except Exception as exc:
+        return {"status": "unavailable", "metrics": None, "error": f"Installed model could not be loaded: {exc}"}
 
 
 @router.get("/analytics/packet-sizes")

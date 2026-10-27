@@ -14,6 +14,8 @@ from sqlalchemy import select
 
 from .database import SessionLocal
 from .detection import predict
+from .dissection import frame_snapshot, decode_snapshot
+from .inspection_store import InspectionWriter, RAW_QUEUE_LIMIT
 from .events import broadcast
 from .models import Capture, Flow, FlowData, LiveSession, Settings
 from .storage import apply_prediction, packet_record, save_flow, serialize_flow
@@ -54,6 +56,7 @@ class LiveCapture:
                 "received_packets": 0, "unsupported_packets": 0, "malformed_packets": 0,
                 "dropped_packets": 0, "capacity_dropped_packets": 0, "persistence_dropped_packets": 0,
                 "processed_packets": 0, "bytes": 0, "active_flows": 0, "completed_flows": 0,
+                "inspection_count": 0, "inspection_raw_bytes": 0, "inspection_queue_bytes": 0, "inspector_latest_id": 0, "inspection_errors": 0,
                 "packets_per_second": 0, "bits_per_second": 0, "protocols": [],
                 "model_status": "unavailable", "model_error": "", "inference_errors": 0,
                 # shortcut: AsyncSniffer has no portable driver-drop counter; add pcap_stats when driver telemetry is required.
@@ -79,13 +82,27 @@ class LiveCapture:
         except Exception:
             with self.lock:
                 self.state["malformed_packets"] += 1
-            return
+            packet = None
+        try:
+            frame = frame_snapshot(raw)
+        except Exception:
+            frame = None
+            with self.lock:
+                self.state["inspection_errors"] += 1
         with self.lock:
             if packet is None:
                 self.state["unsupported_packets"] += 1
-            elif self.accepting:
+                if frame is None:
+                    return
+                packet = {"_inspection_only": True, "timestamp": frame['timestamp']}
+            if frame is not None:
+                if self.state["inspection_queue_bytes"] + len(frame["raw_data"]) > RAW_QUEUE_LIMIT:
+                    frame.update(raw_data=b'', raw_status='queue_limit')
+                packet["_frame"] = frame
+            if self.accepting:
                 try:
                     self.queue.put_nowait(packet)
+                    self.state["inspection_queue_bytes"] += len(frame["raw_data"]) if frame else 0
                 except queue.Full:
                     self.state["dropped_packets"] += 1
             else:
@@ -139,9 +156,14 @@ class LiveCapture:
             await self.publisher
 
     async def _publish(self):
+        last_inspection = 0
         while True:
             finished = not self.thread.is_alive()
-            await broadcast({"type": "live_snapshot", "source": "live", "live": self.snapshot()})
+            snapshot = self.snapshot()
+            await broadcast({"type": "live_snapshot", "source": "live", "live": snapshot})
+            if snapshot["inspection_count"] != last_inspection:
+                last_inspection = snapshot["inspection_count"]
+                await broadcast({"type": "packet_updates", "source": "live", "capture_id": snapshot["capture_id"], "inspection_count": last_inspection, "latest_id": snapshot["inspector_latest_id"]})
             if finished:
                 break
             await asyncio.sleep(0.5)
@@ -177,6 +199,7 @@ class LiveCapture:
                 capture_id = capture_row.id
                 session = LiveSession(capture_id=capture_id, interface_id=state["interface_id"], interface_name=state["interface_name"], started_at=state["started_at"], status="starting")
                 db.add(session)
+                inspector = InspectionWriter(db, capture_id)
                 db.commit()
                 with self.lock:
                     self.state["capture_id"] = capture_id
@@ -215,6 +238,15 @@ class LiveCapture:
                             break
                     pending = len(batch)
                     for packet in batch:
+                        snapshot = packet.pop('_frame', None)
+                        if snapshot:
+                            with self.lock:
+                                self.state['inspection_queue_bytes'] -= len(snapshot['raw_data'])
+                        frame = decode_snapshot(snapshot) if snapshot else None
+                        if packet.pop('_inspection_only', False):
+                            if frame:
+                                inspector.write(db, frame)
+                            continue
                         key = packet_key(packet)
                         entry = active.get(key)
                         if entry:
@@ -229,6 +261,8 @@ class LiveCapture:
                                     self.state["dropped_packets"] += 1
                                     self.state["capacity_dropped_packets"] += 1
                                 pending -= 1
+                                if frame:
+                                    inspector.write(db, frame)
                                 continue
                             stats = FlowStats(packet)
                             stats.add(packet)
@@ -240,6 +274,8 @@ class LiveCapture:
                             entry[0].add(packet)
                         dirty[entry[1]] = (entry[0], None)
                         db.add(packet_record(capture_id, entry[1], packet))
+                        if frame:
+                            inspector.write(db, frame, entry[1], packet['direction'])
                         processed += 1
                         total_bytes += packet["size"]
                         protocols[packet["protocol"]] += 1
@@ -282,7 +318,8 @@ class LiveCapture:
                     finished = stopping and self.queue.empty() and not active
                     elapsed = time.monotonic() - last_sample
                     update = dict(processed_packets=processed, bytes=total_bytes, completed_flows=completed, active_flows=len(active),
-                                  protocols=[{"name": k, "value": v} for k, v in protocols.items()], recent_packets=list(recent_packets), recent_flows=list(recent_flows), alerts=list(alerts))
+                                  protocols=[{"name": k, "value": v} for k, v in protocols.items()], recent_packets=list(recent_packets), recent_flows=list(recent_flows), alerts=list(alerts),
+                                  inspection_count=inspector.state.packet_count, inspection_raw_bytes=inspector.state.raw_bytes_retained, inspector_latest_id=inspector.latest_id)
                     if elapsed >= 0.5:
                         update.update(packets_per_second=round((processed - last_packets) / elapsed, 1), bits_per_second=round((total_bytes - last_bytes) * 8 / elapsed))
                         last_sample, last_packets, last_bytes = time.monotonic(), processed, total_bytes
