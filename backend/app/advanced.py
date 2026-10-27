@@ -1,5 +1,6 @@
 """PCAP ingestion, replay, detections, alerts and downloadable reports."""
 import asyncio
+import anyio
 import csv
 import io
 import json
@@ -15,19 +16,22 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from sqlalchemy import select
+from sqlalchemy import select, func, or_
 from sqlalchemy.orm import Session
 
 from .database import SessionLocal, get_db
 from .detection import load_model, model_metrics, predict
 from .models import Alert, Capture, Detection, Flow, FlowData, PacketRecord, Settings
 from .traffic import analyze_pcap, iso
+from .storage import apply_prediction, save_flow, packet_record, serialize_flow
+from .events import broadcast, clients, subscribe
+from .local_access import require_local
+from . import live
 
 router = APIRouter(prefix="/api")
 UPLOAD_DIR = Path(__file__).resolve().parents[2] / "uploads"
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
 MAGIC = {b"\xd4\xc3\xb2\xa1", b"\xa1\xb2\xc3\xd4", b"\x4d\x3c\xb2\xa1", b"\xa1\xb2\x3c\x4d", b"\x0a\x0d\x0d\x0a"}
-clients: set[WebSocket] = set()
 replay_state = {"active": False, "capture_id": None, "processed": 0, "total": 0}
 replay_task = None
 
@@ -35,10 +39,6 @@ replay_task = None
 def active_real(db):
     if db.get(Settings, 1).demo_mode:
         raise HTTPException(409, "Turn off sample mode in Settings to work with imported traffic")
-
-
-def serialize_flow(flow):
-    return {column.name: getattr(flow, column.name) for column in Flow.__table__.columns}
 
 
 @router.post("/captures", status_code=201)
@@ -73,21 +73,9 @@ async def import_pcap(file: UploadFile = File(...), db: Session = Depends(get_db
         detected = 0
         for row in analysis["flows"]:
             result = predict(row["features"])
-            classification = "unanalyzed" if result is None else "benign" if result["category"] == "Benign" else "malicious" if result["severity"] == "High" else "suspicious"
-            flow = Flow(timestamp=row["timestamp"], source=row["source"], destination=row["destination"], source_port=row["source_port"], destination_port=row["destination_port"], protocol=row["protocol"], packets=row["packets"], bytes=row["bytes"], duration_ms=row["duration_ms"], classification=classification, category=result["category"] if result else "Not classified", is_demo=False)
-            db.add(flow)
-            db.flush()
-            detail = {key: value for key, value in row.items() if key != "records"}
-            db.add(FlowData(flow_id=flow.id, capture_id=capture.id, features_json=json.dumps(detail), explanation_json=json.dumps(result["explanation"] if result else [])))
-            for p in row["records"]:
-                db.add(PacketRecord(capture_id=capture.id, flow_id=flow.id, timestamp=iso(p["timestamp"]), source=p["source"], destination=p["destination"], source_port=p["source_port"], destination_port=p["destination_port"], protocol=p["protocol"], size=p["size"], flags=p["flags"], direction=p["direction"]))
-            if result:
-                detected += 1
-                detection = Detection(flow_id=flow.id, timestamp=datetime.now(timezone.utc).isoformat(), category=result["category"], confidence=result["confidence"], severity=result["severity"], model_version=result["model_version"], explanation_json=json.dumps(result["explanation"]))
-                db.add(detection)
-                db.flush()
-                if result["category"] != "Benign":
-                    db.add(Alert(detection_id=detection.id, status="New"))
+            flow = save_flow(db, capture.id, row, result)
+            db.add_all(packet_record(capture.id, flow.id, p) for p in row["records"])
+            detected += result is not None
         db.commit()
         await broadcast({"type": "capture_imported", "capture_id": capture.id, "packet_count": capture.packet_count, "flow_count": capture.flow_count})
         return {"id": capture.id, "filename": filename, "packet_count": capture.packet_count, "flow_count": capture.flow_count, "detected_flow_count": detected, "model_status": "trained" if detected else "unavailable", "source": "pcap"}
@@ -113,31 +101,16 @@ async def analyze_existing_capture(capture_id: int, db: Session = Depends(get_db
     capture = db.get(Capture, capture_id)
     if not capture:
         raise HTTPException(404, "Capture not found")
+    if capture.source == "live" and live.capture.busy and live.capture.snapshot()["capture_id"] == capture_id:
+        raise HTTPException(409, "Stop the live session before reanalyzing its flows")
     details = list(db.scalars(select(FlowData).where(FlowData.capture_id == capture_id)))
     classified = 0
     for detail in details:
+        if json.loads(detail.features_json).get("complete") is False:
+            continue
         flow = db.get(Flow, detail.flow_id)
         result = predict(json.loads(detail.features_json)["features"])
-        flow.classification = "benign" if result["category"] == "Benign" else "malicious" if result["severity"] == "High" else "suspicious"
-        flow.category = result["category"]
-        detail.explanation_json = json.dumps(result["explanation"])
-        detection = db.scalar(select(Detection).where(Detection.flow_id == flow.id))
-        if detection is None:
-            detection = Detection(flow_id=flow.id, timestamp=datetime.now(timezone.utc).isoformat(), category=result["category"], confidence=result["confidence"], severity=result["severity"], model_version=result["model_version"], explanation_json=json.dumps(result["explanation"]))
-            db.add(detection)
-            db.flush()
-        else:
-            detection.timestamp = datetime.now(timezone.utc).isoformat()
-            detection.category = result["category"]
-            detection.confidence = result["confidence"]
-            detection.severity = result["severity"]
-            detection.model_version = result["model_version"]
-            detection.explanation_json = json.dumps(result["explanation"])
-        alert = db.scalar(select(Alert).where(Alert.detection_id == detection.id))
-        if result["category"] != "Benign" and alert is None:
-            db.add(Alert(detection_id=detection.id, status="New"))
-        if result["category"] == "Benign" and alert is not None:
-            db.delete(alert)
+        apply_prediction(db, flow, detail, result)
         classified += 1
     db.commit()
     await broadcast({"type": "analysis_completed", "capture_id": capture_id, "classified_flow_count": classified})
@@ -149,11 +122,13 @@ def packets(capture_id: int, page: int = Query(1, ge=1), page_size: int = Query(
     active_real(db)
     if not db.get(Capture, capture_id):
         raise HTTPException(404, "Capture not found")
-    rows = list(db.scalars(select(PacketRecord).where(PacketRecord.capture_id == capture_id).order_by(PacketRecord.timestamp)))
+    conditions = [PacketRecord.capture_id == capture_id]
     if q:
-        rows = [r for r in rows if q.lower() in f"{r.source} {r.destination} {r.protocol} {r.flags}".lower()]
+        conditions.append(or_(*(column.icontains(q, autoescape=True) for column in (PacketRecord.source, PacketRecord.destination, PacketRecord.protocol, PacketRecord.flags))))
     start = (page - 1) * page_size
-    return {"total": len(rows), "page": page, "items": [{column.name: getattr(r, column.name) for column in PacketRecord.__table__.columns} for r in rows[start:start + page_size]]}
+    total = db.scalar(select(func.count()).select_from(PacketRecord).where(*conditions))
+    rows = db.scalars(select(PacketRecord).where(*conditions).order_by(PacketRecord.timestamp, PacketRecord.id).offset(start).limit(page_size))
+    return {"total": total, "page": page, "items": [{column.name: getattr(r, column.name) for column in PacketRecord.__table__.columns} for r in rows]}
 
 
 @router.get("/flows/{flow_id}/analysis")
@@ -219,13 +194,15 @@ def update_alert(alert_id: int, payload: AlertUpdate, db: Session = Depends(get_
 def export_report(kind: Literal["csv", "pdf"], db: Session = Depends(get_db)):
     demo = db.get(Settings, 1).demo_mode
     rows = list(db.scalars(select(Flow).where(Flow.is_demo == demo).order_by(Flow.timestamp.desc()).limit(5000)))
-    source = "SAMPLE FIXTURE - NOT REAL DETECTIONS" if demo else "IMPORTED PCAP DATA"
+    has_live = any(f.traffic_source == "live" for f in rows)
+    source = "SAMPLE FIXTURE - NOT REAL DETECTIONS" if demo else "LIVE CAPTURE AND IMPORTED PCAP DATA" if has_live else "IMPORTED PCAP DATA"
     if kind == "csv":
         output = io.StringIO()
         writer = csv.writer(output)
         writer.writerow(["data_source", "flow_id", "timestamp_utc", "source_ip", "source_port", "destination_ip", "destination_port", "protocol", "packets", "bytes", "duration_ms", "classification", "category"])
         for f in rows:
-            writer.writerow([source, f.id, f.timestamp, f.source, f.source_port, f.destination, f.destination_port, f.protocol, f.packets, f.bytes, f.duration_ms, f.classification, f.category])
+            row_source = source if demo else "LIVE INTERFACE CAPTURE" if f.traffic_source == "live" else "IMPORTED PCAP DATA"
+            writer.writerow([row_source, f.id, f.timestamp, f.source, f.source_port, f.destination, f.destination_port, f.protocol, f.packets, f.bytes, f.duration_ms, f.classification, f.category])
         data = output.getvalue().encode("utf-8-sig")
         return StreamingResponse(io.BytesIO(data), media_type="text/csv", headers={"Content-Disposition": 'attachment; filename="flowtwin-flows.csv"'})
     buffer = io.BytesIO()
@@ -237,9 +214,9 @@ def export_report(kind: Literal["csv", "pdf"], db: Session = Depends(get_db)):
     summary = Table([["Benign", "Suspicious", "Malicious", "Unanalyzed"], [counts[k] for k in ("benign", "suspicious", "malicious", "unanalyzed")]], colWidths=[110] * 4)
     summary.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163149")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("GRID", (0, 0), (-1, -1), 0.3, colors.grey), ("PADDING", (0, 0), (-1, -1), 7)]))
     items.extend([summary, Spacer(1, 14), Paragraph("Recent flows", styles["Heading2"])])
-    table_rows = [["Time (UTC)", "Source", "Destination", "Protocol", "Category"]]
+    table_rows = [["Time / input", "Source", "Destination", "Protocol", "Category"]]
     for f in rows[:25]:
-        table_rows.append([f.timestamp[:16], f.source[:20], f.destination[:20], f.protocol, f.category[:18]])
+        table_rows.append([f.timestamp[:16] + " " + f.traffic_source, f.source[:20], f.destination[:20], f.protocol, f.category[:18]])
     report = Table(table_rows, repeatRows=1, colWidths=[95, 105, 105, 55, 90])
     report.setStyle(TableStyle([("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#163149")), ("TEXTCOLOR", (0, 0), (-1, 0), colors.white), ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.white]), ("FONTSIZE", (0, 0), (-1, -1), 7), ("GRID", (0, 0), (-1, -1), 0.25, colors.lightgrey), ("PADDING", (0, 0), (-1, -1), 5)]))
     items.append(report)
@@ -247,14 +224,6 @@ def export_report(kind: Literal["csv", "pdf"], db: Session = Depends(get_db)):
     doc.build(items)
     buffer.seek(0)
     return StreamingResponse(buffer, media_type="application/pdf", headers={"Content-Disposition": 'attachment; filename="flowtwin-report.pdf"'})
-
-
-async def broadcast(message):
-    for client in list(clients):
-        try:
-            await client.send_json(message)
-        except Exception:
-            clients.discard(client)
 
 
 async def run_replay(capture_id):
@@ -290,6 +259,8 @@ async def start_replay(capture_id: int, db: Session = Depends(get_db)):
     capture = db.get(Capture, capture_id)
     if not capture:
         raise HTTPException(404, "Capture not found")
+    if capture.source != "pcap":
+        raise HTTPException(409, "PCAP replay requires an imported PCAP; live sessions are shown in Live capture")
     replay_task = asyncio.create_task(run_replay(capture_id))
     return {"status": "started", "source": "pcap_replay", "capture_id": capture_id, "total": capture.flow_count}
 
@@ -301,11 +272,37 @@ def get_replay():
 
 @router.websocket("/ws/monitor")
 async def monitor(websocket: WebSocket):
-    await websocket.accept()
-    clients.add(websocket)
-    await websocket.send_json({"type": "connected", "source": "pcap_replay", "replay": replay_state.copy()})
+    def check_mode():
+        with SessionLocal() as db:
+            active_real(db)
     try:
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        clients.discard(websocket)
+        require_local(websocket)
+        await asyncio.to_thread(check_mode)
+    except HTTPException:
+        await websocket.close(code=1008)
+        return
+    if len(clients) >= 8:
+        await websocket.close(code=1013)
+        return
+    queue = subscribe()
+    async def send(group):
+        try:
+            while True:
+                message = await queue.get()
+                await asyncio.wait_for(websocket.send_json(message), timeout=1)
+        except (WebSocketDisconnect, asyncio.TimeoutError, RuntimeError):
+            group.cancel_scope.cancel()
+    try:
+        await websocket.accept()
+        await websocket.send_json({"type": "connected", "source": "monitor", "replay": replay_state.copy(), "live": live.capture.snapshot()})
+        async with anyio.create_task_group() as group:
+            group.start_soon(send, group)
+            try:
+                while True:
+                    await websocket.receive_text()
+            except (WebSocketDisconnect, RuntimeError):
+                pass
+            finally:
+                group.cancel_scope.cancel()
+    finally:
+        clients.pop(queue, None)

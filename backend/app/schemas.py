@@ -22,3 +22,5 @@ class FlowSchema(BaseModel):
     classification: str
     category: str
     is_demo: bool
+    traffic_source: str
+    capture_id: int | None

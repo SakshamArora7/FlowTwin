@@ -1,11 +1,11 @@
-from collections import Counter
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy import select, text
+from sqlalchemy import select, text, func, case, cast, String
 from sqlalchemy.orm import Session
 
 from .database import Base, SessionLocal, engine, get_db
@@ -13,6 +13,8 @@ from .demo import seed_demo
 from .models import Flow, Settings
 from .schemas import FlowSchema, SettingsSchema
 from .advanced import router as advanced_router
+from .live_api import router as live_router
+from . import live
 
 
 @asynccontextmanager
@@ -20,21 +22,27 @@ async def lifespan(app):
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         seed_demo(db)
-    yield
+        live.recover_sessions(db)
+    try:
+        yield
+    finally:
+        await live.capture.close()
 
 
 app = FastAPI(title="FlowTwin", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["http://localhost:5174", "http://127.0.0.1:5174"], allow_methods=["GET", "PUT", "POST", "PATCH"], allow_headers=["Content-Type"])
 app.include_router(advanced_router)
+app.include_router(live_router)
 
 
 def selected_flows(db, hours=24):
     settings = db.get(Settings, 1)
-    rows = list(db.scalars(select(Flow).where(Flow.is_demo == settings.demo_mode).order_by(Flow.timestamp)))
-    if rows:
-        cutoff = datetime.fromisoformat(rows[-1].timestamp) - timedelta(hours=hours)
-        rows = [f for f in rows if datetime.fromisoformat(f.timestamp) > cutoff]
-    return rows
+    query = select(Flow).where(Flow.is_demo == settings.demo_mode)
+    latest = db.scalar(query.with_only_columns(func.max(Flow.timestamp)))
+    if latest:
+        cutoff = (datetime.fromisoformat(latest) - timedelta(hours=hours)).isoformat()
+        query = query.where(Flow.timestamp > cutoff)
+    return query
 
 
 @app.get("/api/health")
@@ -50,7 +58,14 @@ def settings(db: Session = Depends(get_db)):
 
 
 @app.put("/api/settings", response_model=SettingsSchema)
-def update_settings(payload: SettingsSchema, db: Session = Depends(get_db)):
+async def update_settings(payload: SettingsSchema, db: Session = Depends(get_db)):
+    async with live.capture.control:
+        if payload.demo_mode and live.capture.busy:
+            raise HTTPException(409, "Stop live monitoring before enabling sample mode")
+        return await asyncio.to_thread(save_settings, payload, db)
+
+
+def save_settings(payload, db):
     row = db.get(Settings, 1)
     row.demo_mode = payload.demo_mode
     row.refresh_seconds = payload.refresh_seconds
@@ -63,33 +78,46 @@ def update_settings(payload: SettingsSchema, db: Session = Depends(get_db)):
 def overview(hours: int = Query(24), db: Session = Depends(get_db)):
     if hours not in (1, 6, 24):
         raise HTTPException(422, "hours must be 1, 6, or 24")
-    rows = selected_flows(db, hours)
-    counts = Counter(f.classification for f in rows)
-    timeline = {}
-    for f in rows:
-        key = f.timestamp[:13] + ":00:00+00:00"
-        bucket = timeline.setdefault(key, {"time": key, "benign": 0, "suspicious": 0, "malicious": 0, "bytes": 0})
-        bucket[f.classification] += 1
-        bucket["bytes"] += f.bytes
+    query = selected_flows(db, hours)
+    counts = dict(db.execute(query.with_only_columns(Flow.classification, func.count(Flow.id)).group_by(Flow.classification)).all())
+    totals = db.execute(query.with_only_columns(func.sum(Flow.packets), func.sum(Flow.bytes), func.max(Flow.timestamp))).one()
+    def distribution(column, flagged=False, limit=None):
+        grouped = query.where(Flow.classification.in_(["suspicious", "malicious"])) if flagged else query
+        grouped = grouped.with_only_columns(column, func.count(Flow.id)).group_by(column)
+        if limit:
+            grouped = grouped.order_by(func.count(Flow.id).desc(), column).limit(limit)
+        return [{"name": name, "value": value} for name, value in db.execute(grouped)]
+    labels = ("benign", "suspicious", "malicious", "unanalyzed")
+    hour = func.substr(Flow.timestamp, 1, 13)
+    buckets = db.execute(query.with_only_columns(hour, *(func.sum(case((Flow.classification == label, 1), else_=0)) for label in labels), func.sum(Flow.bytes)).group_by(hour).order_by(hour))
+    timeline = [{"time": row[0] + ":00:00+00:00", **dict(zip(labels, row[1:5])), "bytes": row[5]} for row in buckets]
+    alerts = db.scalars(query.where(Flow.classification.in_(["suspicious", "malicious"])).order_by(Flow.timestamp.desc(), Flow.id.desc()).limit(6))
     return {
         "is_demo": db.get(Settings, 1).demo_mode,
-        "window_hours": hours, "window_end": rows[-1].timestamp if rows else None,
-        "total": len(rows), "benign": counts["benign"], "suspicious": counts["suspicious"], "malicious": counts["malicious"], "unanalyzed": counts["unanalyzed"],
-        "packets": sum(f.packets for f in rows), "bytes": sum(f.bytes for f in rows),
-        "protocols": [{"name": k, "value": v} for k, v in Counter(f.protocol for f in rows).items()],
-        "threats": [{"name": k, "value": v} for k, v in Counter(f.category for f in rows if f.classification != "benign").items()],
-        "timeline": list(timeline.values()),
-        "top_sources": [{"name": k, "value": v} for k, v in Counter(f.source for f in rows).most_common(6)],
-        "alerts": [FlowSchema.model_validate(f).model_dump() for f in reversed(rows) if f.classification != "benign"][:6],
+        "window_hours": hours, "window_end": totals[2], "total": sum(counts.values()),
+        **{label: counts.get(label, 0) for label in labels},
+        "packets": totals[0] or 0, "bytes": totals[1] or 0,
+        "protocols": distribution(Flow.protocol), "threats": distribution(Flow.category, flagged=True),
+        "timeline": timeline, "top_sources": distribution(Flow.source, limit=6),
+        "alerts": [FlowSchema.model_validate(f).model_dump() for f in alerts],
     }
+
 
 
 @app.get("/api/flows")
 def flows(q: str = Query("", max_length=100), protocol: Literal["all", "TCP", "UDP", "ICMP"] = "all", classification: Literal["all", "benign", "suspicious", "malicious", "unanalyzed"] = "all", page: int = Query(1, ge=1), page_size: int = Query(10, ge=1, le=100), db: Session = Depends(get_db)):
-    rows = list(reversed(selected_flows(db)))
-    rows = [f for f in rows if (protocol == "all" or f.protocol == protocol) and (classification == "all" or f.classification == classification) and q.lower() in f"{f.source} {f.destination} {f.category} {f.id}".lower()]
-    start = (page - 1) * page_size
-    return {"is_demo": db.get(Settings, 1).demo_mode, "total": len(rows), "page": page, "items": [FlowSchema.model_validate(f).model_dump() for f in rows[start:start + page_size]]}
+    query = selected_flows(db)
+    if protocol != "all":
+        query = query.where(Flow.protocol == protocol)
+    if classification != "all":
+        query = query.where(Flow.classification == classification)
+    if q:
+        searchable = Flow.source + " " + Flow.destination + " " + Flow.category + " " + cast(Flow.id, String)
+        query = query.where(searchable.icontains(q, autoescape=True))
+    total = db.scalar(query.with_only_columns(func.count(Flow.id)))
+    rows = db.scalars(query.order_by(Flow.timestamp.desc(), Flow.id.desc()).offset((page - 1) * page_size).limit(page_size))
+    return {"is_demo": db.get(Settings, 1).demo_mode, "total": total, "page": page, "items": [FlowSchema.model_validate(f).model_dump() for f in rows]}
+
 
 
 @app.get("/api/flows/{flow_id}", response_model=FlowSchema)

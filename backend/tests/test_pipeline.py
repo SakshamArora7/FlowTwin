@@ -107,10 +107,9 @@ def test_replay_emits_real_packet_and_flow_events(client, tmp_path, monkeypatch)
     api.put("/api/settings", json={"demo_mode": False, "refresh_seconds": 30})
     capture = api.post("/api/captures", files={"file": ("replay.pcap", path.read_bytes(), "application/octet-stream")}).json()
     events = []
-    class Sink:
-        async def send_json(self, payload):
-            events.append(payload)
-    monkeypatch.setattr(advanced, "clients", {Sink()})
+    async def collect(payload):
+        events.append(payload)
+    monkeypatch.setattr(advanced, "broadcast", collect)
     asyncio.run(advanced.run_replay(capture["id"]))
     assert sum(e["type"] == "packet" for e in events) == 4
     assert sum(e["type"] == "flow" for e in events) == 2

@@ -7,7 +7,7 @@ Browser (React / Vite / Tailwind / Recharts / Framer Motion)
       │                         ├─ Joblib Random Forest pipeline
       │                         ├─ persisted detections and alert workflow
       │                         └─ CSV / ReportLab PDF exporter
-      └─ WebSocket /api/ws/monitor ─► replay of persisted PCAP packet headers and flows
+      └─ WebSocket /api/ws/monitor ─► live snapshots plus replay of persisted PCAP packet headers and flows
 
 CIC-IDS2017 Parquet mirror ─► cleaning / temporal-within-class holdout ─► Joblib model + metrics
                                  ↑ shared ml/schema.py feature contract ↓
@@ -61,5 +61,17 @@ Replay broadcasts persisted packet headers grouped by flow and pauses 150 ms per
 
 ## Local limits and safety
 
-The backend binds to `127.0.0.1` in the documented run command and is not an authenticated multi-user service. CORS is restricted to the documented frontend origins. SQLite and uploaded files are unencrypted. Do not expose the API to the internet or import traffic without permission. No live network interface is opened, no packets are transmitted, and no payload is executed. Model metrics are shown with evaluation caveats, and sample fixtures are separated from true imports and visibly marked in reports.
+The backend binds to `127.0.0.1` in the documented run command and is not an authenticated multi-user service. CORS is restricted to the documented frontend origins. SQLite and uploaded files are unencrypted. Do not expose the API to the internet or import traffic without permission. A live interface is opened only after a local Start request explicitly selects an enumerated adapter. No packets are transmitted and no payload is executed. See [live monitoring](live-monitoring.md) for setup and capture bounds. Model metrics are shown with evaluation caveats, and sample fixtures are separated from true imports and visibly marked in reports.
 
+
+## Live interface capture
+
+```text
+Explicit local interface selection -> AsyncSniffer (store=False, promisc=False)
+  -> structured headers -> bounded queue (4,096)
+  -> dedicated worker: shared keys, FlowStats, timeouts and TCP termination
+  -> SQLite batches: packets + active statistics -> completed flows -> existing model/alerts
+  -> bounded snapshots every 500 ms -> existing WebSocket -> React Live Monitoring
+```
+
+The capture worker is separate from offline PCAP analysis. Live sessions reuse Capture with source=live, existing flow/packet/detection tables, and the additive live_sessions table. A single process owns capture; start/stop are serialized. Model inference and SQLite work stay off the ASGI event loop. Shared online statistics retain no packet list; SQL dashboard aggregation and packet/flow pagination avoid loading historical captures into memory. Stop closes intake, drains the queue, finalizes active flows, commits, then publishes stopped. Restart marks unfinished sessions interrupted. WebSocket consumers have bounded queues and cannot stall capture. Genuine capture and saved-PCAP replay are separate UI choices and event types.

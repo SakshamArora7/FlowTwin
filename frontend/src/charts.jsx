@@ -10,11 +10,11 @@ function ChartTooltip({ active, payload, label }) {
 
 export function Timeline({ data }) {
   if (!data.length) return <Empty />;
-  return <div className="chart timeline-chart" role="img" aria-label="Sample flow counts over time by classification"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
+  return <div className="chart timeline-chart" role="img" aria-label="Flow counts over time by classification"><ResponsiveContainer width="100%" height="100%"><AreaChart data={data} margin={{ top: 12, right: 12, left: -24, bottom: 0 }}>
     <defs><linearGradient id="benignFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#31d6c4" stopOpacity={0.22}/><stop offset="100%" stopColor="#31d6c4" stopOpacity={0}/></linearGradient></defs>
     <CartesianGrid stroke="#202c3c" strokeDasharray="3 5" vertical={false}/><XAxis dataKey="time" tickFormatter={clock} minTickGap={45} tick={{ fill: '#78879c', fontSize: 11 }} tickLine={false} axisLine={false} dy={10}/><YAxis allowDecimals={false} tick={{ fill: '#78879c', fontSize: 11 }} tickLine={false} axisLine={false}/><Tooltip content={<ChartTooltip />} />
     <Area type="monotone" dataKey="benign" name="Benign" stroke="#31d6c4" strokeWidth={2.5} fill="url(#benignFill)" animationDuration={650}/><Area type="monotone" dataKey="suspicious" name="Suspicious" stroke="#ffb454" strokeWidth={2} fill="transparent" animationDuration={650}/><Area type="monotone" dataKey="malicious" name="Malicious" stroke="#f57386" strokeWidth={2} fill="transparent" animationDuration={650}/>
-  </AreaChart></ResponsiveContainer></div>;
+  <Area type="monotone" dataKey="unanalyzed" name="Unanalyzed" stroke="#8290a6" fill="transparent" animationDuration={650}/></AreaChart></ResponsiveContainer></div>;
 }
 
 export function ProtocolChart({ data, total }) {

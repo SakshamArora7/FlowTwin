@@ -1,5 +1,5 @@
 from sqlalchemy import Boolean, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .database import Base
 
@@ -19,6 +19,15 @@ class Flow(Base):
     classification: Mapped[str] = mapped_column(String)
     category: Mapped[str] = mapped_column(String)
     is_demo: Mapped[bool] = mapped_column(Boolean, default=True)
+    capture_data: Mapped["FlowData | None"] = relationship(lazy="selectin", uselist=False)
+
+    @property
+    def traffic_source(self):
+        return "sample" if self.is_demo else self.capture_data.capture.source if self.capture_data else "pcap"
+
+    @property
+    def capture_id(self):
+        return self.capture_data.capture_id if self.capture_data else None
 
 
 class Settings(Base):
@@ -44,6 +53,7 @@ class FlowData(Base):
     capture_id: Mapped[int] = mapped_column(ForeignKey("captures.id"), index=True)
     features_json: Mapped[str] = mapped_column(Text)
     explanation_json: Mapped[str] = mapped_column(Text, default="[]")
+    capture: Mapped["Capture"] = relationship(lazy="joined")
 
 
 class PacketRecord(Base):
@@ -79,3 +89,15 @@ class Alert(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     detection_id: Mapped[int] = mapped_column(ForeignKey("detections.id"), unique=True, index=True)
     status: Mapped[str] = mapped_column(String, default="New")
+
+
+class LiveSession(Base):
+    __tablename__ = "live_sessions"
+    capture_id: Mapped[int] = mapped_column(ForeignKey("captures.id"), primary_key=True)
+    interface_id: Mapped[str] = mapped_column(String)
+    interface_name: Mapped[str] = mapped_column(String)
+    started_at: Mapped[str] = mapped_column(String)
+    stopped_at: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String)
+    error: Mapped[str] = mapped_column(Text, default="")
+    counters_json: Mapped[str] = mapped_column(Text, default="{}")
