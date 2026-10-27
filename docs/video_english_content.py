@@ -1,0 +1,103 @@
+"""English on-screen copy and expanded Hindi narration for the FlowTwin demo."""
+
+SEGMENTS = [
+    {
+        "title": "What is FlowTwin?",
+        "points": ["PCAP-based network traffic analysis", "Two-way flow construction", "AI-assisted security review"],
+        "note": "FlowTwin supports investigation; it does not prove an attack.",
+        "image": "flowtwin-sample-dashboard.png", "offset": 0,
+        "speech": "नमस्ते। मेरा प्रोजेक्ट फ्लो ट्विन है। इसका उद्देश्य सेव किए गए नेटवर्क ट्रैफिक को ऐसे रूप में बदलना है जिसे विद्यार्थी या सुरक्षा विश्लेषक आसानी से जाँच सके। यह पी-कैप फ़ाइल के पैकेट पढ़ता है, उन्हें दो तरफ़ा फ़्लो में जोड़ता है, और प्रशिक्षित मशीन लर्निंग मॉडल से संभावित जोखिम दिखाता है। यह हमले की अंतिम पुष्टि नहीं करता।",
+    },
+    {
+        "title": "How the system works",
+        "points": ["React dashboard sends requests to FastAPI", "Scapy parses packets; SQLite saves results", "Random Forest evaluates selected flow features"],
+        "note": "Input → packets → flows → features → prediction → alerts and reports.",
+        "image": "integrated-dashboard.png", "offset": 0,
+        "speech": "इसका पूरा रास्ता समझना आसान है। रिएक्ट डैशबोर्ड फ्रंट एंड है। फास्ट ए पी आई फ़ाइल लेता है और स्केपी से पैकेट पार्स करता है। एस क्यू लाइट में कैप्चर, फ़्लो, डिटेक्शन और अलर्ट सेव होते हैं। फिर रैंडम फॉरेस्ट मॉडल चुने हुए फ़्लो फ़ीचर्स पर अनुमान देता है। नतीजे डैशबोर्ड, अलर्ट और रिपोर्ट में दिखते हैं।",
+    },
+    {
+        "title": "Sample mode vs imported data",
+        "points": ["Sample mode uses illustrative UI records", "Real mode measures imported PCAP packets", "Sample labels are not model predictions"],
+        "note": "Turn off sample mode in Settings before importing a capture.",
+        "image": "flowtwin-sample-dashboard.png", "offset": 0,
+        "speech": "ऐप पहले सैंपल मोड में खुलता है। उसमें बने हुए रिकॉर्ड सिर्फ़ यू आई दिखाने के लिए हैं। उन लेबलों को असली ए आई डिटेक्शन कहना गलत होगा। जब मैं सेटिंग्स से सैंपल मोड बंद करता हूँ, तब नेटवर्क ट्रैफिक पेज पर आयात की गई पी-कैप फ़ाइल के वास्तविक पैकेटों से मापे हुए आँकड़े दिखाई देते हैं। शिक्षक के सामने यह अंतर साफ़ बताना ज़रूरी है।",
+    },
+    {
+        "title": "Importing a PCAP file",
+        "points": ["Accepts PCAP and PCAPNG with size limits", "Reads IPs, ports, protocol and timestamps", "Shows packet size, TCP flags and direction"],
+        "note": "The included 9-packet capture is synthetic and has no attack ground truth.",
+        "image": "integrated-traffic.png", "offset": 70,
+        "speech": "अब नेटवर्क ट्रैफिक पेज पर पी-कैप या पी-कैप एन जी फ़ाइल आयात करते हैं। स्केपी प्रत्येक समर्थित पैकेट का सोर्स और डेस्टिनेशन आई पी, पोर्ट, प्रोटोकॉल, समय, आकार और टी सी पी फ़्लैग निकालता है। तालिका में आप इन्हें देख सकते हैं। फ़ाइल साइज़ और पैकेट गिनती की सीमाएँ भी हैं। डेमो फ़ाइल में नौ सिंथेटिक पैकेट हैं; यह पार्सर की कार्यक्षमता दिखाती है, किसी हमले का ग्राउंड ट्रुथ नहीं।",
+    },
+    {
+        "title": "Bidirectional flow grouping",
+        "points": ["A → B and B → A form one conversation", "Protocol and endpoint pair identify a flow", "Timeout or TCP close starts a new flow"],
+        "note": "The first observed packet defines the forward direction.",
+        "image": "flowtwin-flow-explanation.png", "offset": 370,
+        "speech": "फ्लो ट्विन नाम दो दिशाओं की बातचीत से आता है। ए से बी भेजा गया पैकेट और बी से ए आया जवाब, दोनों एक ही फ़्लो में जुड़ सकते हैं। ऐप प्रोटोकॉल और दोनों एंडपॉइंट के आई पी तथा पोर्ट से फ़्लो पहचानता है। पहला देखा गया पैकेट फॉरवर्ड दिशा तय करता है। टाइम आउट या टी सी पी कनेक्शन बंद होने के बाद नया फ़्लो शुरू होता है।",
+    },
+    {
+        "title": "Features measured from packets",
+        "points": ["Duration; forward and backward counts", "Bytes, packet sizes and inter-arrival time", "Packet rate and TCP flag counts"],
+        "note": "Seven ordered features are passed to the trained classifier.",
+        "image": "flowtwin-flow-explanation.png", "offset": 430,
+        "speech": "फ़्लो बनने के बाद पैकेटों से अवधि, दोनों दिशाओं के पैकेट और बाइट, पैकेट साइज़, पैकेट दर, दो पैकेटों के बीच का समय, और टी सी पी फ़्लैग गिने जाते हैं। विवरण पैनल ये मापे गए आँकड़े दिखाता है। मॉडल के लिए सात फ़ीचर्स तय क्रम और यूनिट में भेजे जाते हैं: अवधि, आगे पीछे पैकेट गिनती, और फ़िन, सिन, रीसेट तथा ऐक फ़्लैग गिनती।",
+    },
+    {
+        "title": "Training the AI model",
+        "points": ["Selected CIC-IDS2017 labeled flow rows", "Median imputer + 120-tree Random Forest", "Six supported categories including Benign"],
+        "note": "The installed model used 50,117 training rows.",
+        "image": "integrated-detection.png", "offset": 40,
+        "speech": "मॉडल को सी आई सी आई डी एस दो हज़ार सत्रह के चुने हुए लेबल्ड फ़्लो रिकॉर्ड से प्रशिक्षित किया गया है। सफ़ाई और मिसिंग वैल्यू संभालने के बाद एक सौ बीस पेड़ों वाला रैंडम फॉरेस्ट लगाया गया। समर्थित श्रेणियाँ हैं बेनाइन, बॉटनेट, ब्रूट फोर्स, डी डॉस, डॉस और पोर्ट स्कैन। स्थानीय मॉडल ने पचास हज़ार एक सौ सत्रह ट्रेनिंग रिकॉर्ड इस्तेमाल किए। सैंपल डैशबोर्ड डेटा प्रशिक्षण में नहीं जाता।",
+    },
+    {
+        "title": "Predictions and explanations",
+        "points": ["Category, probability and severity", "Tree-path contributions explain the vote", "A person must validate suspicious activity"],
+        "note": "Confidence is a model estimate, not proof of compromise.",
+        "image": "flowtwin-flow-explanation.png", "offset": 430,
+        "speech": "आयात किए गए फ़्लो पर मॉडल एक श्रेणी, उसकी प्रॉबेबिलिटी और जोखिम स्तर देता है। एक्सप्लेनेशन पैनल दिखाता है कि मॉडल के पेड़ों के निर्णय रास्तों में कौन से फ़ीचर्स ने वोट बढ़ाया या घटाया। यह व्याख्या मॉडल के व्यवहार की है, असली हमले का प्रमाण नहीं। अगर कोई फ़्लो संदिग्ध दिखे, तो विश्लेषक को पैकेट, लॉग और नेटवर्क संदर्भ से पुष्टि करनी चाहिए।",
+    },
+    {
+        "title": "What the evaluation means",
+        "points": ["12,324 held-out rows from source files", "Measured weighted F1: 94.84%", "Not accuracy on a new network or PCAP"],
+        "note": "CICFlowMeter vs Scapy extraction equivalence is unverified.",
+        "image": "integrated-detection.png", "offset": 0,
+        "speech": "मॉडल का वेटेड एफ वन स्कोर चौरानवे दशमलव आठ चार प्रतिशत था, बारह हज़ार तीन सौ चौबीस टेस्ट रिकॉर्ड पर। लेकिन ये रिकॉर्ड उन्हीं स्रोत फ़ाइलों के बाद के हिस्से से आए थे। पूरा नया कैप्चर दिन या नया नेटवर्क अलग नहीं रखा गया था। प्रशिक्षण टेबल सी आई सी फ़्लो मीटर से बनी थीं, जबकि यह ऐप स्केपी से फ़ीचर्स निकालता है। दोनों की सटीक संख्यात्मक बराबरी साबित नहीं हुई, इसलिए इस स्कोर को नए पी-कैप की गारंटी नहीं कहेंगे।",
+    },
+    {
+        "title": "Monitoring uses PCAP replay",
+        "points": ["WebSocket streams saved packet headers", "Analyzed flows appear during replay", "No live network sniffing or packet injection"],
+        "note": "The stream is accelerated for a short classroom demonstration.",
+        "image": "integrated-monitoring.png", "offset": 65,
+        "speech": "लाइव मॉनिटरिंग पेज में स्टार्ट रीप्ले दबाने पर वेब सॉकेट सेव किए हुए पैकेट हेडर और विश्लेषित फ़्लो भेजता है। इस दौरान प्रोटोकॉल और फ़्लैग किए गए कनेक्शन भी दिखते हैं। इसे लाइव इंटरफ़ेस कैप्चर कहना सही नहीं है। ऐप नेटवर्क पर पैकेट भेजता भी नहीं। तेज़ रीप्ले का उद्देश्य शिक्षक के सामने पूरी प्रक्रिया कम समय में दिखाना है।",
+    },
+    {
+        "title": "Alerts, analytics and reports",
+        "points": ["Non-Benign predictions create alerts", "Track New, Investigating or Resolved", "Inspect charts; export CSV or PDF"],
+        "note": "Reports label sample fixtures separately from imported PCAP data.",
+        "image": "flowtwin-alerts.png", "offset": 15,
+        "speech": "जब मॉडल किसी फ़्लो को बेनाइन के अलावा दूसरी श्रेणी देता है, अलर्ट बनता है। उसकी स्थिति न्यू से इन्वेस्टिगेटिंग और फिर रिज़ॉल्व्ड की जा सकती है। एनालिटिक्स में ट्रैफिक समय, प्रोटोकॉल, प्रमुख आई पी, श्रेणियाँ और पैकेट साइज़ दिखते हैं। रिपोर्ट्स में सी एस वी और पी डी एफ निर्यात मिलते हैं। सैंपल मोड की रिपोर्ट अपने डेटा स्रोत को अलग से बताती है।",
+    },
+    {
+        "title": "Live demo for your teacher",
+        "points": ["Dashboard → Settings → import PCAP", "Inspect flow → AI → replay → alerts", "Finish with report and honest limitations"],
+        "note": "Use only captures you are authorized to analyze.",
+        "image": "flowtwin-reports.png", "offset": 0,
+        "speech": "प्रेज़ेंटेशन में पहले समस्या और डैशबोर्ड बताइए। फिर सैंपल मोड बंद करके दी गई सिंथेटिक पी-कैप फ़ाइल अपलोड कीजिए। पैकेट से फ़्लो बनने का उदाहरण दिखाइए, मॉडल का परिणाम और फ़ीचर योगदान समझाइए, रीप्ले चलाइए, अलर्ट स्थिति और रिपोर्ट दिखाइए। अंत में साफ़ कहिए कि सिंथेटिक फ़ाइल का हमले वाला लेबल सत्यापित नहीं है, और मॉडल का स्कोर जाँच की शुरुआत है, अंतिम निर्णय नहीं। धन्यवाद।",
+    },
+]
+
+ENGLISH_SPEECHES = [
+    "Welcome to FlowTwin. This project turns a saved network packet capture into information that a student or security analyst can inspect. It parses packets, joins the two directions of a conversation into flows, and uses a trained machine-learning model to highlight traffic worth investigating. A prediction is an investigative signal, not proof that an attack occurred.",
+    "Here is the complete system path. A React dashboard communicates with a FastAPI backend. Scapy reads the packet capture and extracts network headers. SQLite stores captures, packets, flows, detections, and alert status. A Random Forest model evaluates selected flow features. The dashboard then presents the results as tables, charts, alerts, and downloadable reports.",
+    "FlowTwin starts in sample mode. Those fixed example records demonstrate the interface, and their labels are not AI predictions. For measured traffic, I turn sample mode off in Settings and import a PCAP file. From that point, packet values and flow statistics come from the imported capture. Explaining this distinction prevents the demonstration from confusing fixture data with real analysis.",
+    "The Network Traffic page accepts PCAP and PCAPNG files within processing limits. Scapy reads each supported packet's source and destination IP address, transport ports, protocol, timestamp, size, and TCP flags. The packet table lets us inspect the evidence behind a flow. The bundled walkthrough capture contains nine generated packets; it tests the parser, but it has no verified attack label.",
+    "A flow is a network conversation grouped by protocol and its two endpoint address-and-port pairs. A packet from A to B and its reply from B to A can belong to the same flow. The first observed packet sets the forward direction. Timeouts and TCP closure split a long conversation into new flows. This bidirectional grouping is the idea behind the FlowTwin name.",
+    "After grouping packets, FlowTwin measures duration, forward and backward packet counts and bytes, packet-size statistics, packet rate, inter-arrival time, and TCP flag counts. The detail panel displays these measured values. Exactly seven ordered features are passed to the model: duration, two directional packet counts, and FIN, SYN, RST, and ACK flag counts. The saved model checks that inference uses this expected feature schema.",
+    "The model was trained from selected labeled CIC-IDS2017 flow tables. Training cleans the data, handles missing values with a median imputer, and fits a Random Forest with one hundred and twenty trees. The six supported categories are Benign, Botnet, Brute force, DDoS, DoS, and Port scan. The installed training run used fifty thousand one hundred and seventeen rows. Dashboard sample fixtures were never used for model training.",
+    "For each imported flow, the model returns a category and a probability estimate. The interface also shows severity and a local explanation derived from the decision paths inside the forest's trees. Those feature contributions explain why the model voted as it did. They do not establish that a host is compromised. Suspicious predictions should be checked against packet evidence, logs, and network context.",
+    "The measured weighted F-one score was ninety-four point eight four percent on twelve thousand three hundred and twenty-four held-out rows. This is a result for that selected dataset split, not a guarantee on a new network. Related scenarios can occur in both training and testing. The source tables were produced with CICFlowMeter, whereas this application extracts PCAP features with Scapy; exact numerical equivalence has not been established.",
+    "In Live Monitoring, Start Replay sends saved packet headers and already analyzed flows through a WebSocket. The page updates as the events arrive and shows protocol distribution and flagged connections. This is accelerated playback of an imported PCAP. It is not direct interface sniffing, and it does not transmit packets onto the network. Replay makes the processing sequence easy to show during a short classroom demonstration.",
+    "A non-Benign model result creates a persistent security alert. Its status can move from New to Investigating and then Resolved. The analytics page shows traffic over time, protocols, source IPs, categories, packet sizes, and model metrics. Reports can be exported as CSV or PDF. Sample-mode exports are labeled separately so example records are never presented as actual detections.",
+    "For a live teacher demonstration, first explain the problem and dashboard. Turn off sample mode and import the provided synthetic PCAP. Show how packet records become a two-way flow, then open the AI result and feature explanation. Start replay, inspect the alert workflow, and export a report. Finish by stating the limits honestly: the bundled capture has no verified attack labels, and a model score begins an investigation rather than ending one. Thank you.",
+]

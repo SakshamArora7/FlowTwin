@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.db
+*.db-*
+node_modules/
+dist/
+.env
+*.log
+coverage/
+datasets/raw/
+ml/artifacts/
+uploads/
+docs/flowtwin-demo-hindi.mp4
