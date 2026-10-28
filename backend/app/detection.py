@@ -24,6 +24,8 @@ def load_model():
     artifact = joblib.load(path)
     if artifact.get("schema_version") != SCHEMA_VERSION or artifact.get("features") != list(FEATURES):
         raise RuntimeError("Model feature schema does not match the packet extractor")
+    # Single-flow inference costs less than dispatching 120 trees to worker threads.
+    artifact["pipeline"].named_steps["forest"].n_jobs = 1
     _cache.update(modified=modified, artifact=artifact)
     return artifact
 
@@ -39,14 +41,16 @@ def local_contributions(forest, row, class_index):
     base = 0.0
     for tree in forest.estimators_:
         nodes = tree.tree_
+        values = nodes.value[:, 0, :]
+        left, right, split, threshold = nodes.children_left, nodes.children_right, nodes.feature, nodes.threshold
         current = 0
-        parent = nodes.value[current][0]
+        parent = values[current]
         base += parent[class_index] / parent.sum()
-        while nodes.children_left[current] != nodes.children_right[current]:
-            feature = nodes.feature[current]
-            child = nodes.children_left[current] if row[feature] <= nodes.threshold[current] else nodes.children_right[current]
-            before = nodes.value[current][0]
-            after = nodes.value[child][0]
+        while left[current] != right[current]:
+            feature = split[current]
+            child = left[current] if row[feature] <= threshold[current] else right[current]
+            before = values[current]
+            after = values[child]
             contributions[feature] += after[class_index] / after.sum() - before[class_index] / before.sum()
             current = child
     return base / len(forest.estimators_), (contributions / len(forest.estimators_)).tolist()

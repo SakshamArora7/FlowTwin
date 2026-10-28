@@ -107,10 +107,9 @@ def test_replay_emits_real_packet_and_flow_events(client, tmp_path, monkeypatch)
     api.put("/api/settings", json={"demo_mode": False, "refresh_seconds": 30})
     capture = api.post("/api/captures", files={"file": ("replay.pcap", path.read_bytes(), "application/octet-stream")}).json()
     events = []
-    class Sink:
-        async def send_json(self, payload):
-            events.append(payload)
-    monkeypatch.setattr(advanced, "clients", {Sink()})
+    async def collect(payload):
+        events.append(payload)
+    monkeypatch.setattr(advanced, "broadcast", collect)
     asyncio.run(advanced.run_replay(capture["id"]))
     assert sum(e["type"] == "packet" for e in events) == 4
     assert sum(e["type"] == "flow" for e in events) == 2
@@ -138,3 +137,74 @@ def test_alert_status_lifecycle(client):
     assert api.patch(f"/api/alerts/{alert_id}", json={"status": "Resolved"}).json()["status"] == "Resolved"
     assert api.get("/api/alerts").json()[0]["status"] == "Resolved"
     assert api.patch(f"/api/alerts/{alert_id}", json={"status": "Deleted"}).status_code == 422
+
+
+def test_capture_analysis_keeps_websocket_responsive(client, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from backend.app import advanced
+    api, _ = client
+    api.put("/api/settings", json={"demo_mode": False, "refresh_seconds": 30})
+    monkeypatch.setattr(advanced, "UPLOAD_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(advanced, "predict", lambda features: None)
+    path = tmp_path / "analysis.pcap"
+    make_pcap(path)
+    capture = api.post("/api/captures", files={"file": ("analysis.pcap", path.read_bytes())}).json()
+    started, release = Event(), Event()
+    def prediction(features):
+        started.set()
+        assert release.wait(5), "Analysis blocked the event loop"
+        return {"category": "DoS", "confidence": .9, "severity": "High", "model_version": "test", "explanation": []}
+    monkeypatch.setattr(advanced, "load_model", lambda: {})
+    monkeypatch.setattr(advanced, "predict", prediction)
+    with ThreadPoolExecutor() as executor:
+        future = executor.submit(api.post, f'/api/captures/{capture["id"]}/analyze')
+        try:
+            assert started.wait(3)
+            with api.websocket_connect("/api/ws/monitor") as ws:
+                assert ws.receive_json()["type"] == "connected"
+        finally:
+            release.set()
+        assert future.result().json()["classified_flow_count"] == 2
+    assert len(api.get("/api/detections").json()) == 2
+    assert len(api.get("/api/alerts").json()) == 2
+
+def test_capture_analysis_batches_and_rejects_duplicate_runs(client, tmp_path, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from sqlalchemy import select, func
+    from backend.app import advanced
+    api, factory = client
+    api.put('/api/settings', json={'demo_mode': False, 'refresh_seconds': 30})
+    monkeypatch.setattr(advanced, 'UPLOAD_DIR', tmp_path / 'uploads')
+    monkeypatch.setattr(advanced, 'predict', lambda features: None)
+    path = tmp_path / 'many.pcap'
+    wrpcap(str(path), [Ether()/IP(src='10.0.0.1', dst='10.0.0.2')/UDP(sport=1000+i, dport=53) for i in range(102)])
+    capture = api.post('/api/captures', files={'file': ('many.pcap', path.read_bytes())}).json()
+    started, release = Event(), Event()
+    calls = 0
+    def prediction(features):
+        nonlocal calls
+        calls += 1
+        if calls == 101:
+            with factory() as db:
+                assert db.scalar(select(func.count()).select_from(Detection)) == 100
+            started.set()
+            assert release.wait(5)
+        return {'category': 'Benign', 'confidence': .9, 'severity': 'Low', 'model_version': 'test', 'explanation': []}
+    monkeypatch.setattr(advanced, 'load_model', lambda: {})
+    monkeypatch.setattr(advanced, 'predict', prediction)
+    url = f'/api/captures/{capture["id"]}/analyze'
+    with ThreadPoolExecutor() as executor:
+        future = executor.submit(api.post, url)
+        try:
+            assert started.wait(4)
+            assert api.post(url).status_code == 409
+            assert api.get('/api/health').status_code == 200
+        finally:
+            release.set()
+        assert future.result().json()['classified_flow_count'] == 102
+    assert api.post(url).json()['classified_flow_count'] == 102
+    with factory() as db:
+        assert db.scalar(select(func.count()).select_from(Detection)) == 102
+    assert api.get('/api/alerts').json() == []
